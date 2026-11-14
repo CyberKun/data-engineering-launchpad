@@ -8,15 +8,22 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 FIELDS = ("order_id", "customer_id", "order_date", "amount_cents", "status", "updated_at")
+OPTIONAL_FIELDS = ("sales_channel",)
 STATUSES = {"paid", "pending", "cancelled", "refunded"}
 
 
-def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str]]:
+def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str, str]]:
     """Parse and validate the entire input before opening a write transaction."""
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
-        if reader.fieldnames is None or set(reader.fieldnames) != set(FIELDS):
-            raise ValueError(f"CSV must contain exactly these columns: {', '.join(FIELDS)}")
+        if (
+            reader.fieldnames is None
+            or len(reader.fieldnames) != len(set(reader.fieldnames))
+            or not set(FIELDS).issubset(reader.fieldnames)
+            or set(reader.fieldnames) - set(FIELDS) - set(OPTIONAL_FIELDS)
+        ):
+            expected = ", ".join((*FIELDS, "[sales_channel]"))
+            raise ValueError(f"CSV must contain these columns (sales_channel is optional): {expected}")
         rows = []
         for number, raw in enumerate(reader, start=2):
             try:
@@ -28,6 +35,7 @@ def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str]]:
                     raise ValueError("amount_cents must be a non-negative integer")
                 amount_cents = int(amount_text)
                 status = raw["status"].strip().lower()
+                sales_channel = (raw.get("sales_channel") or "").strip() or "unknown"
                 timestamp = datetime.fromisoformat(raw["updated_at"].strip())
                 if timestamp.tzinfo is None:
                     raise ValueError("updated_at must include a timezone")
@@ -36,7 +44,7 @@ def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str]]:
                     raise ValueError("missing ID or unsupported status")
                 if timestamp.date() < date.fromisoformat(order_date):
                     raise ValueError("updated_at precedes order_date")
-                rows.append((order_id, customer_id, order_date, amount_cents, status, updated_at))
+                rows.append((order_id, customer_id, order_date, amount_cents, status, updated_at, sales_channel))
             except (KeyError, AttributeError, TypeError, ValueError) as exc:
                 raise ValueError(f"Invalid CSV row {number}: {exc}") from exc
     if not rows:
@@ -54,6 +62,7 @@ def initialize(connection: sqlite3.Connection) -> None:
             amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0),
             status TEXT NOT NULL CHECK (status IN ('paid', 'pending', 'cancelled', 'refunded')),
             updated_at TEXT NOT NULL,
+            sales_channel TEXT NOT NULL DEFAULT 'unknown',
             PRIMARY KEY (order_id, updated_at)
         );
         CREATE TABLE IF NOT EXISTS silver_orders (
@@ -62,7 +71,8 @@ def initialize(connection: sqlite3.Connection) -> None:
             order_date TEXT NOT NULL,
             amount_cents INTEGER NOT NULL,
             status TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            sales_channel TEXT NOT NULL DEFAULT 'unknown'
         );
         CREATE TABLE IF NOT EXISTS daily_revenue (
             order_date TEXT PRIMARY KEY,
@@ -71,6 +81,13 @@ def initialize(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    # Keep databases created by the original six-column pipeline usable.
+    for table in ("bronze_orders", "silver_orders"):
+        columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if "sales_channel" not in columns:
+            connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN sales_channel TEXT NOT NULL DEFAULT 'unknown'"
+            )
 
 
 def run(input_path: Path, database_path: Path) -> dict[str, int]:
@@ -88,7 +105,7 @@ def run(input_path: Path, database_path: Path) -> dict[str, int]:
             with connection:
                 for row in rows:
                     existing = connection.execute(
-                        "SELECT order_id, customer_id, order_date, amount_cents, status, updated_at "
+                        "SELECT order_id, customer_id, order_date, amount_cents, status, updated_at, sales_channel "
                         "FROM bronze_orders WHERE order_id = ? AND updated_at = ?",
                         (row[0], row[5]),
                     ).fetchone()
@@ -97,14 +114,16 @@ def run(input_path: Path, database_path: Path) -> dict[str, int]:
                             raise ValueError(f"Conflicting version for order {row[0]} at {row[5]}")
                         continue
                     connection.execute(
-                        "INSERT INTO bronze_orders VALUES (?, ?, ?, ?, ?, ?)", row
+                        "INSERT INTO bronze_orders "
+                        "(order_id, customer_id, order_date, amount_cents, status, updated_at, sales_channel) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)", row
                     )
 
                 connection.execute("DELETE FROM silver_orders")
                 connection.execute(
                     """
                     INSERT INTO silver_orders
-                    SELECT order_id, customer_id, order_date, amount_cents, status, updated_at
+                    SELECT order_id, customer_id, order_date, amount_cents, status, updated_at, sales_channel
                     FROM (
                         SELECT *, ROW_NUMBER() OVER (
                             PARTITION BY order_id ORDER BY updated_at DESC

@@ -43,6 +43,66 @@ class PipelineTests(unittest.TestCase):
             {"order_date": "2026-01-02", "paid_orders": 1, "revenue_cents": 200},
         ])
 
+    def test_optional_sales_channel_defaults_and_persists_across_replays(self):
+        self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
+        self.assertEqual(read_orders(self.source)[0][-1], "unknown")
+        first = run(self.source, self.database)
+        self.assertEqual(run(self.source, self.database), first)
+        with closing(sqlite3.connect(self.database)) as connection:
+            for table in ("bronze_orders", "silver_orders"):
+                self.assertEqual(
+                    connection.execute(f"SELECT sales_channel FROM {table}").fetchall(),
+                    [("unknown",)],
+                )
+
+    def test_sales_channel_is_stored_and_part_of_version_conflict(self):
+        with self.source.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow([*HEADER, "sales_channel"])
+            writer.writerow(["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z", " web "])
+        row = read_orders(self.source)[0]
+        self.assertEqual(row[-1], "web")
+        run(self.source, self.database)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(connection.execute("SELECT sales_channel FROM silver_orders").fetchone(), ("web",))
+        with self.source.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow([*HEADER, "sales_channel"])
+            writer.writerow(["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z", "store"])
+        with self.assertRaisesRegex(ValueError, "Conflicting version"):
+            run(self.source, self.database)
+
+    def test_existing_database_migrates_sales_channel_to_unknown(self):
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.executescript("""
+                CREATE TABLE bronze_orders (
+                    order_id TEXT NOT NULL, customer_id TEXT NOT NULL, order_date TEXT NOT NULL,
+                    amount_cents INTEGER NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY (order_id, updated_at));
+                CREATE TABLE silver_orders (
+                    order_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, order_date TEXT NOT NULL,
+                    amount_cents INTEGER NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL);
+                INSERT INTO bronze_orders VALUES ('a','c1','2026-01-01',100,'paid','2026-01-01T10:00:00+00:00');
+                INSERT INTO silver_orders VALUES ('a','c1','2026-01-01',100,'paid','2026-01-01T10:00:00+00:00');
+            """)
+        self.write([["b", "c2", "2026-01-02", "200", "paid", "2026-01-02T10:00:00Z"]])
+        run(self.source, self.database)
+        with closing(sqlite3.connect(self.database)) as connection:
+            for table in ("bronze_orders", "silver_orders"):
+                self.assertEqual(
+                    connection.execute(f"SELECT sales_channel FROM {table} ORDER BY order_id").fetchall(),
+                    [("unknown",), ("unknown",)],
+                )
+
+    def test_unknown_csv_column_is_rejected(self):
+        with self.source.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow([*HEADER, "unexpected"])
+            writer.writerow(["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z", "x"])
+        with self.assertRaisesRegex(ValueError, "sales_channel is optional"):
+            read_orders(self.source)
+        self.assertFalse(self.database.exists())
+
     def test_refund_removes_revenue(self):
         self.write([
             ["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"],
@@ -75,7 +135,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_timezone_normalization(self):
         self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T15:30:00+05:30"]])
-        self.assertEqual(read_orders(self.source)[0][-1], "2026-01-01T10:00:00+00:00")
+        self.assertEqual(read_orders(self.source)[0][-2], "2026-01-01T10:00:00+00:00")
 
     def test_cross_midnight_normalization_preserves_order_date_and_rerun(self):
         cases = [
@@ -86,7 +146,7 @@ class PipelineTests(unittest.TestCase):
             with self.subTest(timestamp=timestamp):
                 database = self.directory / f"midnight-{index}.db"
                 self.write([["tz-1", "c1", "2026-01-01", "100", "paid", timestamp]])
-                expected_row = ("tz-1", "c1", "2026-01-01", 100, "paid", expected_utc)
+                expected_row = ("tz-1", "c1", "2026-01-01", 100, "paid", expected_utc, "unknown")
                 self.assertEqual(read_orders(self.source), [expected_row])
                 expected_counts = {
                     "input_rows": 1, "bronze_versions": 1,
