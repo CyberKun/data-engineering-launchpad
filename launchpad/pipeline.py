@@ -24,10 +24,12 @@ def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str, str]]:
             or set(reader.fieldnames) - set(FIELDS) - set(OPTIONAL_FIELDS)
         ):
             expected = ", ".join((*FIELDS, "[sales_channel]"))
-            raise ValueError(f"CSV must contain these columns (sales_channel is optional): {expected}")
+            raise ValueError(f"CSV must contain exactly these columns (sales_channel is optional): {expected}")
         rows = []
         for number, raw in enumerate(reader, start=2):
             try:
+                if None in raw:
+                    raise ValueError(f"expected {len(reader.fieldnames)} fields, found more")
                 if None in raw:
                     raise ValueError(f"expected {len(FIELDS)} fields, found more")
                 order_id = raw["order_id"].strip()

@@ -272,11 +272,15 @@ class ReadOrdersValidationTests(unittest.TestCase):
             initialize(connection)
             with connection:
                 connection.execute(
-                    "INSERT INTO bronze_orders VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO bronze_orders "
+                    "(order_id, customer_id, order_date, amount_cents, status, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
                     ("seed", "c0", "2025-12-31", 50, "paid", "2025-12-31T09:00:00+00:00"),
                 )
                 connection.execute(
-                    "INSERT INTO silver_orders VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO silver_orders "
+                    "(order_id, customer_id, order_date, amount_cents, status, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
                     ("seed", "c0", "2025-12-31", 50, "paid", "2025-12-31T09:00:00+00:00"),
                 )
                 connection.execute("INSERT INTO daily_revenue VALUES ('2025-12-31', 1, 50)")
