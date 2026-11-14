@@ -1,0 +1,3 @@
+order_id,customer_id,order_date,amount_cents,status,updated_at
+late-200,c-9,2026-01-05,4200,paid,2026-01-05T10:00:00+00:00
+steady-201,c-8,2026-01-06,1800,paid,2026-01-06T09:00:00+00:00

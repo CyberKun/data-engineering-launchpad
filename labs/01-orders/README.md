@@ -70,6 +70,51 @@ that order from the report on the next run.
 4. Add an invalid row after a valid row. Verify that a failed run does not partially ingest the file.
 5. Add a test for a timezone offset and a new test for a refund arriving late.
 
+### Late-arriving update and backfill
+
+This exercise simulates receiving new source data after an earlier batch has
+already been processed. It uses two committed synthetic CSV fixtures and a
+throwaway SQLite database; no clock, cloud service, or third-party package is
+involved. Run these commands from the repository root:
+
+```bash
+python3 -m launchpad.pipeline run --input labs/01-orders/late-arriving-initial.csv --db /tmp/launchpad-late-arrival.db
+python3 -m launchpad.pipeline report --db /tmp/launchpad-late-arrival.db
+python3 -m launchpad.pipeline run --input labs/01-orders/late-arriving-update.csv --db /tmp/launchpad-late-arrival.db
+python3 -m launchpad.pipeline report --db /tmp/launchpad-late-arrival.db
+python3 -m launchpad.pipeline run --input labs/01-orders/late-arriving-update.csv --db /tmp/launchpad-late-arrival.db
+python3 -m launchpad.pipeline report --db /tmp/launchpad-late-arrival.db
+```
+
+Before running them, predict which existing order changes, which new order is
+added, and whether the report changes the original event date. The first run
+reports 2 input rows, 2 bronze versions, 2 current orders, and 2 revenue days.
+Its revenue is 4200 cents on January 5 and 1800 cents on January 6.
+
+The late batch contains a refund for `late-200` with a later `updated_at`,
+even though its `order_date` remains January 5, plus a previously unseen paid
+order for that same January 5 business date. After the second run, the expected
+counts are 2 input rows, 4 bronze versions, 3 current orders, and 2 revenue
+days. The report becomes 2500 cents on January 5 and 1800 cents on January 6:
+the refund removes the old 4200-cent contribution, the newly arrived order
+adds 2500 cents, and the January 6 result is unchanged. The third run repeats
+the same late batch; counts and report must remain exactly the same.
+
+Inspect history and current state with:
+
+```bash
+python3 -c "import sqlite3; c = sqlite3.connect('/tmp/launchpad-late-arrival.db'); print('bronze:', c.execute('SELECT order_id, order_date, status, updated_at FROM bronze_orders ORDER BY order_id, updated_at').fetchall()); print('silver:', c.execute('SELECT order_id, order_date, status, updated_at FROM silver_orders ORDER BY order_id').fetchall()); c.close()"
+```
+
+Bronze should contain four versions; silver should contain three orders, with
+`late-200` now refunded. The pipeline rebuilds the small gold summary from
+current silver state on every run, so this example demonstrates a logical
+backfill without a date-partitioned warehouse. Here, “late” means the update
+arrives in a later batch than the first version; the fixtures use explicit
+timestamps so the exercise is deterministic. The pipeline orders versions by
+`updated_at`, not by file arrival order. A real source needs a trustworthy
+version-ordering field and a defined policy for equal timestamps.
+
 ### Cross-midnight UTC exercise
 
 Prerequisites: Python 3.11+, the repository root as your working directory, and
