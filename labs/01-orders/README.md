@@ -115,6 +115,33 @@ timestamps so the exercise is deterministic. The pipeline orders versions by
 `updated_at`, not by file arrival order. A real source needs a trustworthy
 version-ordering field and a defined policy for equal timestamps.
 
+### Schema evolution: add an optional source field
+
+The pipeline accepts one optional additive field, `sales_channel`, while
+remaining compatible with the original six-column CSV. Missing or whitespace
+only values are normalized to `unknown`; any other unrecognized extra column
+is rejected. Existing SQLite databases are migrated by adding the field with
+the same default.
+
+1. Copy `labs/01-orders/orders.csv` to `orders-with-channel.csv` and add a
+   `sales_channel` column with values such as `web` and `store`.
+2. Run the pipeline with both the original six-column file and the expanded
+   file, each against its own fresh database. Both should succeed.
+3. Inspect `bronze_orders` and `silver_orders`: the channel should survive
+   both transformations. Try a blank channel and confirm it becomes
+   `unknown`; try an unrelated extra column and confirm validation rejects it.
+4. Change the channel without changing the order's `(order_id, updated_at)`
+   key and replay it. The pipeline should reject this as a conflicting source
+   version, just as it does for a changed amount.
+5. Run each input twice against its database. Counts and revenue should be
+   stable, and the second run should not duplicate history.
+
+Discussion: an additive defaulted field is compatible with old CSV producers
+here because the pipeline assigns a stable value to missing data. In a real
+ingestion system, coordinate source contracts with downstream consumers and
+preserve historical values needed for replay. The database migration gives
+existing rows the explicit `unknown` value rather than guessing their channel.
+
 ### Cross-midnight UTC exercise
 
 Prerequisites: Python 3.11+, the repository root as your working directory, and
