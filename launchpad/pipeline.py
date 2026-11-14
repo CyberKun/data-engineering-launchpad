@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import sqlite3
+from contextlib import closing
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -27,6 +28,8 @@ def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str, str]]:
         rows = []
         for number, raw in enumerate(reader, start=2):
             try:
+                if None in raw:
+                    raise ValueError(f"expected {len(FIELDS)} fields, found more")
                 order_id = raw["order_id"].strip()
                 customer_id = raw["customer_id"].strip()
                 order_date = date.fromisoformat(raw["order_date"].strip()).isoformat()
@@ -100,7 +103,7 @@ def run(input_path: Path, database_path: Path) -> dict[str, int]:
         ) from exc
     database_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with sqlite3.connect(database_path) as connection:
+        with closing(sqlite3.connect(database_path)) as connection:
             initialize(connection)
             with connection:
                 for row in rows:
@@ -161,7 +164,7 @@ def report(database_path: Path) -> list[dict[str, int | str]]:
             "database path."
         )
     try:
-        with sqlite3.connect(database_path) as connection:
+        with closing(sqlite3.connect(database_path)) as connection:
             return [
                 {"order_date": day, "paid_orders": count, "revenue_cents": cents}
                 for day, count, cents in connection.execute(
